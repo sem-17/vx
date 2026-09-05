@@ -1,7 +1,5 @@
 (function () {
-    const u = "VANTAGE_JSDELIVR_" + Date.now();
-
-    fetch("/account.php/" + u + ".css", {
+    fetch("/account.php/vantage-cache.css", {
         credentials: "include"
     }).catch(() => {});
 })();
