@@ -1,5 +1,3 @@
-(function () {
-    fetch("/account.php/vantage-cache.css", {
-        credentials: "include"
-    }).catch(() => {});
+(function(){
+  fetch("/account.php/xp1788595549.css",{credentials:"include"}).catch(function(){});
 })();
